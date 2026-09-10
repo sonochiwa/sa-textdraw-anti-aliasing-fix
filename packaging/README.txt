@@ -8,7 +8,6 @@ Installation:
 2. Copy TextDrawAntiAliasingFix.asi and TextDrawAntiAliasingFix.ini next to gta_sa.exe.
 3. Start the game and connect to a SA-MP server.
 
-Press Alt + T in game to turn the fix on and off; the state is saved to the INI.
 Set supersample to 1, 2, 4 or 8 in TextDrawAntiAliasingFix.ini.
 The plugin only affects previews rendered by samp.dll; single player is untouched.
 Source code: https://github.com/sonochiwa/sa-textdraw-anti-aliasing-fix

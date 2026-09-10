@@ -42,9 +42,6 @@ water reflections are out of scope.
   stencil always cleared on the plugin's own surfaces.
 - Optional `2x`, `4x` or `8x` enlargement of the client's 256x256 preview
   raster, with the camera and framing untouched.
-- `Alt + T` toggle that turns the fix on and off in a running game and reloads
-  `supersample` when it turns back on.
-- Optional diagnostic log and preview dumps for measuring what was intercepted.
 
 ## Requirements
 
@@ -77,15 +74,6 @@ The default `TextDrawAntiAliasingFix.ini` is:
 # TextDraw Anti-Aliasing Fix v1.0.0
 # Created by sonochiwa
 # Source code: https://github.com/sonochiwa/sa-textdraw-anti-aliasing-fix
-# Default toggle hotkey: Alt + T
-
-[general]
-isEnabled=1
-hotkeyEnabled=1
-hotkeyModifier=18
-hotkeyKey=84
-logging=0
-dumpPreviews=0
 
 [antiAliasing]
 supersample=4
@@ -94,23 +82,12 @@ previewScale=2
 
 | Setting | Default | Meaning |
 | --- | ---: | --- |
-| `isEnabled` | `1` | Master switch. The hotkey rewrites this key, so the last state survives a restart. |
-| `hotkeyEnabled` | `1` | Enables the toggle hotkey. |
-| `hotkeyModifier` | `18` | Decimal Win32 virtual-key code of the modifier. `18` is `Alt`; `0` means a single-key hotkey. |
-| `hotkeyKey` | `84` | Decimal Win32 virtual-key code of the main key. `84` is `T`. An empty or zero value disables hotkey handling. |
-| `logging` | `0` | Writes `TextDrawAntiAliasingFix.log` next to the plugin. The file is recreated on every start. |
-| `dumpPreviews` | `0` | Diagnostic mode. Writes each sampled preview to a 32-bit TGA next to the plugin and steps the supersample factor on every toggle, so one session produces every factor as files. |
 | `supersample` | `4` | Rendering resolution multiplier for the preview. Values are normalized to `1`, `2`, `4` or `8`; `1` disables anti-aliasing while keeping the rest of the path. |
 | `previewScale` | `2` | Multiplies the client's 256x256 preview raster. Values are normalized to `1`, `2`, `4` or `8`; `1` keeps the original size. |
 
-The whole file is read once when the plugin loads. `Alt + T` then turns the fix
-on and off while the game runs, which makes an A/B comparison possible without a
-restart; the hotkey only reacts while the game window is in the foreground.
-Turning it back on re-reads `supersample`, so a different factor can be edited
-in the INI and applied live. `isEnabled` is rewritten on every toggle.
-
-`previewScale` is not part of the hotkey. The raster is allocated once, when the
-client builds its preview camera, so a changed value needs a game restart.
+Both settings are read once when the plugin loads, and the preview raster is
+allocated once, when the client builds its preview camera, so a changed value
+needs a game restart.
 
 The two multipliers compound: `previewScale` decides how large the texture the
 client composes is, and `supersample` decides how much larger than that the

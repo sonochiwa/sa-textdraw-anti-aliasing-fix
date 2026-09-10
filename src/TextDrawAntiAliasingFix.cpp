@@ -3,10 +3,8 @@
 #include <d3d9.h>
 #include <intrin.h>
 
-#include <cstdarg>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 #include <cwchar>
 
@@ -76,17 +74,6 @@ Detour g_rasterCreateDetour = {kRwRasterCreate, {}, false};
 
 RasterCreateFn g_rasterCreateTrampoline = nullptr;
 int g_rasterScale = 1;
-bool g_logging = false;
-bool g_reportedTarget = false;
-bool g_reportedResolve = false;
-bool g_reportedClear = false;
-bool g_reportedStates = false;
-bool g_reportedEndStates = false;
-volatile BOOL g_dumpPending = FALSE;
-bool g_dumpEnabled = false;
-int g_dumpIndex = 0;
-wchar_t g_dumpBasePath[MAX_PATH] = {};
-wchar_t g_logPath[MAX_PATH] = {};
 
 HMODULE g_sampModule = nullptr;
 uintptr_t g_sampStart = 0;
@@ -101,45 +88,16 @@ IDirect3DSurface9* g_resolveColor = nullptr;
 IDirect3DSurface9* g_resolveDepth = nullptr;
 D3DSURFACE_DESC g_colorDesc = {};
 D3DFORMAT g_depthFormat = D3DFMT_UNKNOWN;
-volatile int g_requestedFactor = 4;
+int g_requestedFactor = 4;
 int g_activeFactor = 0;
-volatile BOOL g_reloadPending = FALSE;
-volatile BOOL g_enabled = TRUE;
-volatile BOOL g_shuttingDown = FALSE;
-bool g_hotkeyEnabled = true;
-int g_hotkeyModifier = VK_MENU;
-int g_hotkeyKey = 'T';
 wchar_t g_iniPath[MAX_PATH] = {};
 bool g_resolveActive = false;
 void* g_resolveCamera = nullptr;
-void* g_previewCamera = nullptr;
 bool g_installed = false;
 
 void* g_clearedCamera = nullptr;
 RwRGBA g_clearColor = {};
 int g_clearFlags = 0;
-
-void Log(const char* format, ...) {
-    if (!g_logging || g_logPath[0] == L'\0')
-        return;
-
-    FILE* file = nullptr;
-    if (_wfopen_s(&file, g_logPath, L"a") != 0 || !file)
-        return;
-
-    SYSTEMTIME now = {};
-    GetLocalTime(&now);
-    fprintf(file, "[%02u:%02u:%02u.%03u] ", now.wHour, now.wMinute, now.wSecond,
-            now.wMilliseconds);
-
-    va_list args;
-    va_start(args, format);
-    vfprintf(file, format, args);
-    va_end(args);
-
-    fputc('\n', file);
-    fclose(file);
-}
 
 bool SafeCopy(uintptr_t address, void* result, size_t size) {
     __try {
@@ -194,46 +152,12 @@ bool ResolvePaths(HMODULE module) {
     const size_t room = static_cast<size_t>(MAX_PATH - (slash + 1 - basePath));
     wcscpy_s(slash + 1, room, L"TextDrawAntiAliasingFix.ini");
     wcscpy_s(g_iniPath, basePath);
-    wcscpy_s(slash + 1, room, L"TextDrawAntiAliasingFix.log");
-    wcscpy_s(g_logPath, basePath);
-    wcscpy_s(slash + 1, room, L"TextDrawAntiAliasingFix");
-    wcscpy_s(g_dumpBasePath, basePath);
     return true;
-}
-
-void LoadSupersampleFactor() {
-    const int configured = GetPrivateProfileIntW(
-        L"antiAliasing", L"supersample", 4, g_iniPath);
-    int factor;
-    if (configured >= 8)
-        factor = 8;
-    else if (configured >= 4)
-        factor = 4;
-    else if (configured >= 2)
-        factor = 2;
-    else
-        factor = 1;
-
-    if (factor != g_requestedFactor) {
-        g_requestedFactor = factor;
-        g_reloadPending = TRUE;
-    }
 }
 
 void LoadConfiguration(HMODULE module) {
     if (!ResolvePaths(module))
         return;
-
-    g_enabled = GetPrivateProfileIntW(L"general", L"isEnabled", 1, g_iniPath) != 0;
-    g_hotkeyEnabled =
-        GetPrivateProfileIntW(L"general", L"hotkeyEnabled", 1, g_iniPath) != 0;
-    g_hotkeyModifier =
-        GetPrivateProfileIntW(L"general", L"hotkeyModifier", VK_MENU, g_iniPath);
-    g_hotkeyKey = GetPrivateProfileIntW(L"general", L"hotkeyKey", 'T', g_iniPath);
-    g_logging = GetPrivateProfileIntW(L"general", L"logging", 0, g_iniPath) != 0;
-    g_dumpEnabled =
-        GetPrivateProfileIntW(L"general", L"dumpPreviews", 0, g_iniPath) != 0;
-    g_dumpPending = g_dumpEnabled ? TRUE : FALSE;
 
     const int scale =
         GetPrivateProfileIntW(L"antiAliasing", L"previewScale", 2, g_iniPath);
@@ -246,69 +170,16 @@ void LoadConfiguration(HMODULE module) {
     else
         g_rasterScale = 1;
 
-    LoadSupersampleFactor();
-    g_reloadPending = FALSE;
-
-    if (g_logging)
-        DeleteFileW(g_logPath);
-    Log("TextDraw Anti-Aliasing Fix loaded: isEnabled=%d supersample=%d "
-        "previewScale=%d hotkey=%d+%d",
-        g_enabled ? 1 : 0, g_requestedFactor, g_rasterScale,
-        g_hotkeyEnabled ? g_hotkeyModifier : 0, g_hotkeyEnabled ? g_hotkeyKey : 0);
-}
-
-void StoreEnabledState() {
-    WritePrivateProfileStringW(L"general", L"isEnabled", g_enabled ? L"1" : L"0",
-                               g_iniPath);
-}
-
-bool IsGameForeground() {
-    DWORD processId = 0;
-    GetWindowThreadProcessId(GetForegroundWindow(), &processId);
-    return processId == GetCurrentProcessId();
-}
-
-bool IsHotkeyDown() {
-    if (g_hotkeyModifier != 0 && (GetAsyncKeyState(g_hotkeyModifier) & 0x8000) == 0)
-        return false;
-    return (GetAsyncKeyState(g_hotkeyKey) & 0x8000) != 0;
-}
-
-// The hotkey re-reads the INI when it turns the fix back on, so a different
-// supersample can be compared without restarting the game.
-DWORD WINAPI HotkeyThread(void*) {
-    bool wasDown = false;
-    while (!g_shuttingDown) {
-        const bool isDown = IsGameForeground() && IsHotkeyDown();
-        if (isDown && !wasDown) {
-            g_enabled = !g_enabled;
-            if (g_enabled) {
-                if (g_dumpEnabled) {
-                    // Diagnostic mode steps through the multisample modes so one
-                    // run produces every configuration, including no
-                    // multisampling at all, which isolates the surface swap
-                    // from the sampling.
-                    int next = g_requestedFactor / 2;
-                    if (next < 1)
-                        next = 8;
-                    g_requestedFactor = next;
-                    g_reloadPending = TRUE;
-                } else {
-                    LoadSupersampleFactor();
-                }
-            }
-            StoreEnabledState();
-            // Each toggle asks for one more sample, so the two states can be
-            // compared as files rather than by eye.
-            if (g_dumpEnabled)
-                g_dumpPending = TRUE;
-            Log("hotkey: isEnabled=%d supersample=%d", g_enabled ? 1 : 0,
-                g_requestedFactor);
-        }
-        wasDown = isDown;
-        Sleep(30);
-    }
-    return 0;
+    const int factor =
+        GetPrivateProfileIntW(L"antiAliasing", L"supersample", 4, g_iniPath);
+    if (factor >= 8)
+        g_requestedFactor = 8;
+    else if (factor >= 4)
+        g_requestedFactor = 4;
+    else if (factor >= 2)
+        g_requestedFactor = 2;
+    else
+        g_requestedFactor = 1;
 }
 
 IDirect3DDevice9* GetDevice() {
@@ -429,23 +300,14 @@ bool CreateResolveTargets(IDirect3DDevice9* device,
                         color.Width * static_cast<UINT>(step),
                         color.Height * static_cast<UINT>(step), color.Format,
                         D3DMULTISAMPLE_NONE, 0, FALSE, &stage, nullptr))) {
-                    Log("downsample stage %dx could not be created", step);
                     ReleaseDownsampleChain();
                     break;
                 }
                 g_downsampleChain[g_downsampleCount++] = stage;
             }
-            Log("downsample chain: %d intermediate stage(s)", g_downsampleCount);
-            Log("created %ux%u supersampled pair for a %ux%u preview (%dx), "
-                "color format %u, depth format %u",
-                width, height, color.Width, color.Height, factor,
-                static_cast<unsigned>(color.Format),
-                static_cast<unsigned>(depth.Format));
             return true;
         }
 
-        Log("%dx supersampling rejected: color 0x%08X, depth 0x%08X", factor,
-            static_cast<unsigned>(colorResult), static_cast<unsigned>(depthResult));
         if (depthSurface)
             depthSurface->Release();
         if (colorSurface)
@@ -453,7 +315,6 @@ bool CreateResolveTargets(IDirect3DDevice9* device,
         factor /= 2;
     }
 
-    Log("no supersampling factor accepted for %ux%u", color.Width, color.Height);
     return false;
 }
 
@@ -472,8 +333,7 @@ bool EnsureResolveTargets(IDirect3DDevice9* device,
 // the resolved image keeps the original background color and alpha. Depth and
 // stencil are always cleared: these surfaces belong to the plugin, they survive
 // between previews, and the client never clears the stencil channel it asked
-// for. Leaving stale stencil content there makes the scene's leftover stencil
-// test reject parts of the model, which reads as a see-through body.
+// for.
 void ReplayCameraClear(IDirect3DDevice9* device, const void* camera) {
     DWORD flags = D3DCLEAR_ZBUFFER;
     D3DCOLOR color = D3DCOLOR_ARGB(0, 0, 0, 0);
@@ -490,70 +350,7 @@ void ReplayCameraClear(IDirect3DDevice9* device, const void* camera) {
     if (HasStencil(g_depthFormat))
         flags |= D3DCLEAR_STENCIL;
 
-    const HRESULT result = device->Clear(0, nullptr, flags, color, 1.0f, 0);
-    if (!g_reportedClear) {
-        g_reportedClear = true;
-        Log("first clear: flags 0x%02X color 0x%08X result 0x%08X",
-            static_cast<unsigned>(flags), static_cast<unsigned>(color),
-            static_cast<unsigned>(result));
-    }
-}
-
-// Writes the surface currently bound as render target 0 to an uncompressed
-// 32-bit TGA next to the plugin. This is the only way to see what the preview
-// texture actually holds in colour and in alpha, instead of inferring it from
-// what the finished frame looks like on screen.
-void DumpRenderTarget(IDirect3DDevice9* device, const wchar_t* tag) {
-    IDirect3DSurface9* source = nullptr;
-    if (FAILED(device->GetRenderTarget(0, &source)) || !source)
-        return;
-
-    D3DSURFACE_DESC desc = {};
-    IDirect3DSurface9* readable = nullptr;
-    D3DLOCKED_RECT locked = {};
-    bool locked_ok = false;
-
-    if (SUCCEEDED(source->GetDesc(&desc)) &&
-        SUCCEEDED(device->CreateOffscreenPlainSurface(
-            desc.Width, desc.Height, desc.Format, D3DPOOL_SYSTEMMEM, &readable,
-            nullptr)) &&
-        SUCCEEDED(device->GetRenderTargetData(source, readable)) &&
-        SUCCEEDED(readable->LockRect(&locked, nullptr, D3DLOCK_READONLY)))
-        locked_ok = true;
-
-    if (locked_ok) {
-        wchar_t path[MAX_PATH] = {};
-        swprintf_s(path, L"%s-preview-%02d-%s.tga", g_dumpBasePath, g_dumpIndex,
-                   tag);
-
-        FILE* file = nullptr;
-        if (_wfopen_s(&file, path, L"wb") == 0 && file) {
-            const auto width = static_cast<uint16_t>(desc.Width);
-            const auto height = static_cast<uint16_t>(desc.Height);
-            uint8_t header[18] = {};
-            header[2] = 2;                       // uncompressed true colour
-            memcpy(&header[12], &width, 2);
-            memcpy(&header[14], &height, 2);
-            header[16] = 32;                     // bits per pixel
-            header[17] = 0x28;                   // 8 alpha bits, top-left origin
-            fwrite(header, 1, sizeof(header), file);
-
-            const auto* rows = static_cast<const uint8_t*>(locked.pBits);
-            for (UINT y = 0; y < desc.Height; ++y)
-                fwrite(rows + static_cast<size_t>(y) * locked.Pitch, 4,
-                       desc.Width, file);
-            fclose(file);
-
-            Log("dumped preview %02d (%s): %ux%u format %u", g_dumpIndex, "tga",
-                desc.Width, desc.Height, static_cast<unsigned>(desc.Format));
-        }
-        readable->UnlockRect();
-        ++g_dumpIndex;
-    }
-
-    if (readable)
-        readable->Release();
-    source->Release();
+    device->Clear(0, nullptr, flags, color, 1.0f, 0);
 }
 
 bool ActivateResolveTargets(IDirect3DDevice9* device, const void* camera) {
@@ -571,24 +368,6 @@ bool ActivateResolveTargets(IDirect3DDevice9* device, const void* camera) {
     }
 
     ReplayCameraClear(device, camera);
-
-    if (!g_reportedStates) {
-        g_reportedStates = true;
-        DWORD zEnable = 0, zWrite = 0, zFunc = 0, stencil = 0, alphaBlend = 0,
-              alphaTest = 0, cull = 0, colorWrite = 0;
-        device->GetRenderState(D3DRS_ZENABLE, &zEnable);
-        device->GetRenderState(D3DRS_ZWRITEENABLE, &zWrite);
-        device->GetRenderState(D3DRS_ZFUNC, &zFunc);
-        device->GetRenderState(D3DRS_STENCILENABLE, &stencil);
-        device->GetRenderState(D3DRS_ALPHABLENDENABLE, &alphaBlend);
-        device->GetRenderState(D3DRS_ALPHATESTENABLE, &alphaTest);
-        device->GetRenderState(D3DRS_CULLMODE, &cull);
-        device->GetRenderState(D3DRS_COLORWRITEENABLE, &colorWrite);
-        Log("states at preview start: zEnable=%lu zWrite=%lu zFunc=%lu "
-            "stencil=%lu alphaBlend=%lu alphaTest=%lu cull=%lu colorWrite=0x%lX",
-            zEnable, zWrite, zFunc, stencil, alphaBlend, alphaTest, cull,
-            colorWrite);
-    }
 
     // Nothing else about the pass is touched. The client renders the preview
     // with depth testing disabled, which is deliberate: its camera uses a 0.01
@@ -611,23 +390,8 @@ void* __cdecl RwCameraBeginUpdateHook(void* camera) {
 
     IDirect3DDevice9* device = GetDevice();
     if (!device) {
-        Log("preview camera %p seen but RwD3D9GetCurrentD3DDevice returned null",
-            camera);
         return result;
     }
-
-    // Remembered even while the fix is off, so the end hook can dump what the
-    // client rendered on its own for comparison.
-    g_previewCamera = camera;
-
-    // The hotkey thread only raises flags; the surfaces are always touched from
-    // the rendering thread.
-    if (g_reloadPending) {
-        g_reloadPending = FALSE;
-        ReleaseResolveTargets();
-    }
-    if (!g_enabled)
-        return result;
 
     ReleaseFrameSurfaces();
     if (FAILED(device->GetRenderTarget(0, &g_resolveColor)) || !g_resolveColor ||
@@ -642,16 +406,6 @@ void* __cdecl RwCameraBeginUpdateHook(void* camera) {
         FAILED(g_resolveDepth->GetDesc(&depth))) {
         ReleaseFrameSurfaces();
         return result;
-    }
-
-    if (!g_reportedTarget) {
-        g_reportedTarget = true;
-        Log("preview target: %ux%u color format %u multisample %u, depth %ux%u "
-            "format %u multisample %u",
-            color.Width, color.Height, static_cast<unsigned>(color.Format),
-            static_cast<unsigned>(color.MultiSampleType), depth.Width, depth.Height,
-            static_cast<unsigned>(depth.Format),
-            static_cast<unsigned>(depth.MultiSampleType));
     }
 
     if (color.MultiSampleType != D3DMULTISAMPLE_NONE) {
@@ -671,14 +425,6 @@ void* __cdecl RwCameraBeginUpdateHook(void* camera) {
 }
 
 void* __cdecl RwCameraEndUpdateHook(void* camera) {
-    // The fix being off is a valid state to sample: the render target then still
-    // holds exactly what the client drew by itself.
-    if (!g_resolveActive && g_dumpPending && camera == g_previewCamera) {
-        g_dumpPending = FALSE;
-        if (IDirect3DDevice9* device = GetDevice())
-            DumpRenderTarget(device, L"off");
-    }
-
     if (g_resolveActive && camera == g_resolveCamera) {
         IDirect3DDevice9* device = GetDevice();
         if (device && g_resolveColor && g_msaaColor) {
@@ -698,39 +444,9 @@ void* __cdecl RwCameraEndUpdateHook(void* camera) {
                     stageSource = g_downsampleChain[i];
                 }
                 if (SUCCEEDED(resolveResult)) {
-                    resolveResult = device->StretchRect(
-                        stageSource, nullptr, g_resolveColor, nullptr, filter);
+                    device->StretchRect(stageSource, nullptr, g_resolveColor,
+                                        nullptr, filter);
                 }
-                if (g_dumpPending) {
-                    g_dumpPending = FALSE;
-                    wchar_t tag[32] = {};
-                    swprintf_s(tag, L"on-%dx", g_activeFactor);
-                    DumpRenderTarget(device, tag);
-                }
-                if (!g_reportedResolve) {
-                    g_reportedResolve = true;
-                    Log("first resolve: StretchRect 0x%08X",
-                        static_cast<unsigned>(resolveResult));
-                }
-            } else {
-                Log("could not rebind preview surfaces: target 0x%08X depth 0x%08X",
-                    static_cast<unsigned>(targetResult),
-                    static_cast<unsigned>(depthResult));
-            }
-            if (!g_reportedEndStates) {
-                g_reportedEndStates = true;
-                DWORD zEnable = 0, zFunc = 0, zWrite = 0, alphaBlend = 0,
-                      srcBlend = 0, destBlend = 0, cull = 0;
-                device->GetRenderState(D3DRS_ZENABLE, &zEnable);
-                device->GetRenderState(D3DRS_ZFUNC, &zFunc);
-                device->GetRenderState(D3DRS_ZWRITEENABLE, &zWrite);
-                device->GetRenderState(D3DRS_ALPHABLENDENABLE, &alphaBlend);
-                device->GetRenderState(D3DRS_SRCBLEND, &srcBlend);
-                device->GetRenderState(D3DRS_DESTBLEND, &destBlend);
-                device->GetRenderState(D3DRS_CULLMODE, &cull);
-                Log("states after preview: zEnable=%lu zFunc=%lu zWrite=%lu "
-                    "alphaBlend=%lu srcBlend=%lu destBlend=%lu cull=%lu",
-                    zEnable, zFunc, zWrite, alphaBlend, srcBlend, destBlend, cull);
             }
         }
         ReleaseFrameSurfaces();
@@ -754,7 +470,6 @@ void* __cdecl RwRasterCreateHook(int width, int height, int depth, int flags) {
             IsMultiplayerCaller(_ReturnAddress())) {
             width *= g_rasterScale;
             height *= g_rasterScale;
-            Log("preview raster type %d scaled to %dx%d", type, width, height);
         }
     }
 
@@ -841,7 +556,6 @@ bool InstallHooks() {
         !IsExecutableAddress(kRwCameraClear) ||
         !IsExecutableAddress(kRwRasterCreate) ||
         !IsExecutableAddress(kRwD3D9GetCurrentDevice)) {
-        Log("install aborted: unexpected executable layout");
         return false;
     }
 
@@ -851,8 +565,6 @@ bool InstallHooks() {
                       sizeof(kEndUpdateBytes)) ||
         !MatchesBytes(kRwCameraClear, kCameraClearBytes,
                       sizeof(kCameraClearBytes))) {
-        Log("install aborted: RenderWare camera entry points do not match the "
-            "expected US 1.0 bytes, another modification may have hooked them");
         return false;
     }
 
@@ -864,7 +576,6 @@ bool InstallHooks() {
                        reinterpret_cast<const void*>(&RwCameraEndUpdateHook)) ||
         !InstallDetour(g_beginUpdateDetour,
                        reinterpret_cast<const void*>(&RwCameraBeginUpdateHook))) {
-        Log("install aborted: could not write the camera detours");
         RemoveDetour(g_beginUpdateDetour);
         RemoveDetour(g_endUpdateDetour);
         RemoveDetour(g_cameraClearDetour);
@@ -878,11 +589,9 @@ bool InstallHooks() {
                           sizeof(kRasterCreateBytes)) ||
             !InstallRasterCreateDetour()) {
             g_rasterScale = 1;
-            Log("previewScale disabled: RwRasterCreate could not be hooked");
         }
     }
 
-    Log("hooks installed");
 
     g_installed = true;
     return true;
@@ -902,8 +611,6 @@ DWORD WINAPI Initialize(void* parameter) {
     if (!InstallHooks())
         return 0;
 
-    if (g_hotkeyEnabled && g_hotkeyKey != 0)
-        HotkeyThread(nullptr);
     return 0;
 }
 
@@ -915,7 +622,6 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void*) {
         if (HANDLE thread = CreateThread(nullptr, 0, Initialize, instance, 0, nullptr))
             CloseHandle(thread);
     } else if (reason == DLL_PROCESS_DETACH) {
-        g_shuttingDown = TRUE;
         if (g_installed)
             RemoveHooks();
     }
