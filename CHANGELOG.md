@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.1
+
+- Fixed the game staying on a black screen after alt-tab once a preview had
+  been rendered. The plugin's render targets and depth surfaces live in
+  `D3DPOOL_DEFAULT`, which made the device reset the game performs on
+  regaining focus fail; they are now released before every reset and
+  recreated on the next preview.
+
 ## 1.0.0
 
 - Added `2x`, `4x` or `8x` supersampling, defaulting to `4`, of the SA-MP model

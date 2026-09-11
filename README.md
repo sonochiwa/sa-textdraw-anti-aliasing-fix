@@ -42,6 +42,8 @@ water reflections are out of scope.
   stencil always cleared on the plugin's own surfaces.
 - Optional `2x`, `4x` or `8x` enlargement of the client's 256x256 preview
   raster, with the camera and framing untouched.
+- Release of the plugin's surfaces before every device reset, so alt-tab from
+  exclusive fullscreen restores the game as it did without the plugin.
 
 ## Requirements
 
@@ -71,7 +73,7 @@ still needs validation with the user's complete mod and driver-profile setup.
 The default `TextDrawAntiAliasingFix.ini` is:
 
 ```ini
-# TextDraw Anti-Aliasing Fix v1.0.0
+# TextDraw Anti-Aliasing Fix v1.0.1
 # Created by sonochiwa
 # Source code: https://github.com/sonochiwa/sa-textdraw-anti-aliasing-fix
 
@@ -150,6 +152,14 @@ only a 2x2 neighbourhood, so a single `4x` or `8x` reduction would discard most
 of the rendered image rather than average it. At 2:1 the bilinear tap lands in
 the centre of each 2x2 block and averages all four texels.
 
+Every surface the plugin creates lives in `D3DPOOL_DEFAULT`, and
+`IDirect3DDevice9::Reset` fails while any such surface is alive. The game resets
+the device after it was lost, which is what alt-tab does in exclusive fullscreen,
+and RenderWare retries a failed reset every frame without drawing anything. The
+plugin therefore hooks `Reset` through the device vtable the first time it sees
+the device, releases its surfaces before forwarding the call, and recreates them
+on the next preview.
+
 ## Release Integrity
 
 Tagged archives are built by GitHub Actions from the tagged source revision.
@@ -157,7 +167,7 @@ Each release includes a SHA-256 checksum and a signed GitHub build-provenance
 attestation. Verify an archive with:
 
 ```powershell
-gh attestation verify TextDrawAntiAliasingFix-v1.0.0.zip -R sonochiwa/sa-textdraw-anti-aliasing-fix
+gh attestation verify TextDrawAntiAliasingFix-v1.0.1.zip -R sonochiwa/sa-textdraw-anti-aliasing-fix
 ```
 
 This verifies archive provenance and integrity; it is not a guarantee that the

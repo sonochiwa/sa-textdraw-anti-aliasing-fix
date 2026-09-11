@@ -1,4 +1,4 @@
-TextDraw Anti-Aliasing Fix v1.0.0
+TextDraw Anti-Aliasing Fix v1.0.1
 
 Renders SA-MP model previews, such as preview-model textdraws, at several times
 their resolution and reduces the result into the client's preview texture.

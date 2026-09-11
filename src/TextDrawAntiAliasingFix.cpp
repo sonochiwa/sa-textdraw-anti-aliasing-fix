@@ -33,6 +33,8 @@ constexpr size_t kCameraBeginUpdateOffset = 0x18;
 constexpr size_t kCameraEndUpdateOffset = 0x1C;
 // Device camera-clear entry inside the RenderWare engine instance.
 constexpr size_t kEngineCameraClearOffset = 0x9C;
+// IDirect3DDevice9::Reset is the seventeenth entry of the device vtable.
+constexpr size_t kDeviceResetSlot = 16;
 
 constexpr int kClearImage = 0x01;
 constexpr int kClearDepth = 0x02;
@@ -60,6 +62,8 @@ using CameraUpdateFn = void*(__cdecl*)(void*);
 using DeviceCameraClearFn = int(__cdecl*)(void*, const RwRGBA*, int);
 using GetD3DDeviceFn = void*(__cdecl*)();
 using RasterCreateFn = void*(__cdecl*)(int, int, int, int);
+using DeviceResetFn = HRESULT(__stdcall*)(IDirect3DDevice9*,
+                                          D3DPRESENT_PARAMETERS*);
 
 struct Detour {
     uintptr_t address;
@@ -74,6 +78,9 @@ Detour g_rasterCreateDetour = {kRwRasterCreate, {}, false};
 
 RasterCreateFn g_rasterCreateTrampoline = nullptr;
 int g_rasterScale = 1;
+
+void** g_deviceVtable = nullptr;
+DeviceResetFn g_originalReset = nullptr;
 
 HMODULE g_sampModule = nullptr;
 uintptr_t g_sampStart = 0;
@@ -251,6 +258,60 @@ void ReleaseFrameSurfaces() {
     g_resolveCamera = nullptr;
 }
 
+// Every surface this plugin creates lives in D3DPOOL_DEFAULT, and
+// IDirect3DDevice9::Reset refuses to run while any such surface is alive. The
+// game resets the device after it was lost, which is what alt-tab does in
+// exclusive fullscreen, and RenderWare retries a failed reset every frame
+// without drawing anything, so a preview rendered before the switch used to
+// leave the game on a black screen with the sound still playing. Dropping the
+// surfaces here lets the reset through; the next preview recreates them.
+HRESULT __stdcall DeviceResetHook(IDirect3DDevice9* device,
+                                  D3DPRESENT_PARAMETERS* parameters) {
+    ReleaseFrameSurfaces();
+    ReleaseResolveTargets();
+    return g_originalReset(device, parameters);
+}
+
+// The hook replaces the vtable entry rather than the function behind it, so it
+// chains with whatever the client or other plugins have already put there and
+// needs no knowledge of the d3d9.dll build. RenderWare creates one device per
+// process and resets it in place, so a single vtable is all this ever sees; a
+// device of another class is left alone, which keeps the preview untouched
+// instead of risking the hang.
+bool EnsureDeviceResetHook(IDirect3DDevice9* device) {
+    void** vtable = *reinterpret_cast<void***>(device);
+    if (g_deviceVtable)
+        return vtable == g_deviceVtable;
+
+    auto original = reinterpret_cast<DeviceResetFn>(vtable[kDeviceResetSlot]);
+    const void* hook = reinterpret_cast<const void*>(&DeviceResetHook);
+    if (!original ||
+        !WriteMemory(&vtable[kDeviceResetSlot], &hook, sizeof(hook)))
+        return false;
+
+    g_originalReset = original;
+    g_deviceVtable = vtable;
+    return true;
+}
+
+void RemoveDeviceResetHook() {
+    if (!g_deviceVtable)
+        return;
+
+    // Another plugin may have hooked the slot after this one, in which case
+    // the entry is theirs to restore.
+    void* current = nullptr;
+    if (SafeCopy(reinterpret_cast<uintptr_t>(&g_deviceVtable[kDeviceResetSlot]),
+                 &current, sizeof(current)) &&
+        current == reinterpret_cast<void*>(&DeviceResetHook)) {
+        const void* original = reinterpret_cast<const void*>(g_originalReset);
+        WriteMemory(&g_deviceVtable[kDeviceResetSlot], &original,
+                    sizeof(original));
+    }
+    g_deviceVtable = nullptr;
+    g_originalReset = nullptr;
+}
+
 bool CreateResolveTargets(IDirect3DDevice9* device,
                           const D3DSURFACE_DESC& color,
                           const D3DSURFACE_DESC& depth) {
@@ -392,6 +453,11 @@ void* __cdecl RwCameraBeginUpdateHook(void* camera) {
     if (!device) {
         return result;
     }
+
+    // No surface is created unless it can be released before a device reset,
+    // otherwise the next alt-tab would hang the game.
+    if (!EnsureDeviceResetHook(device))
+        return result;
 
     ReleaseFrameSurfaces();
     if (FAILED(device->GetRenderTarget(0, &g_resolveColor)) || !g_resolveColor ||
@@ -602,6 +668,7 @@ void RemoveHooks() {
     RemoveDetour(g_endUpdateDetour);
     RemoveDetour(g_cameraClearDetour);
     RemoveDetour(g_rasterCreateDetour);
+    RemoveDeviceResetHook();
     g_installed = false;
 }
 
