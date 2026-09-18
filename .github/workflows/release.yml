@@ -2,11 +2,8 @@ name: Release
 
 on:
   push:
-    branches:
-      - main
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
-  workflow_dispatch:
 
 permissions:
   contents: write
@@ -18,106 +15,71 @@ jobs:
     runs-on: windows-2022
 
     steps:
-      - name: Check out source
+      - name: Check out tagged source
         uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Resolve release tag
-        id: release
-        shell: pwsh
-        run: |
-          if ('${{ github.ref_type }}' -eq 'tag') {
-            $tag = '${{ github.ref_name }}'
-          } else {
-            $iniHeader = Get-Content Config\TextDrawAntiAliasingFix.ini -TotalCount 1
-            if ($iniHeader -notmatch '^# TextDraw Anti-Aliasing Fix v(?<version>\d+\.\d+\.\d+)$') {
-              throw 'The INI header does not contain a semantic version.'
-            }
-            $tag = "v$($Matches.version)"
-          }
-
-          if ($tag -notmatch '^v\d+\.\d+\.\d+$') {
-            throw "Tag '$tag' is not a semantic release tag."
-          }
-          "tag=$tag" >> $env:GITHUB_OUTPUT
-
-      - name: Check out release revision
-        if: github.ref_type != 'tag'
-        shell: pwsh
-        run: git checkout --force 'refs/tags/${{ steps.release.outputs.tag }}'
 
       - name: Configure MSBuild
         uses: microsoft/setup-msbuild@v2
 
       - name: Build Release Win32
-        run: msbuild TextDrawAntiAliasingFix.sln /t:Rebuild /p:Configuration=Release /p:Platform=Win32 /m
+        run: msbuild TextDrawAntiAliasingFix.sln /t:Rebuild /p:Configuration=Release /p:Platform=Win32
 
-      - name: Validate tag and prepare archive
+      - name: Package release
         id: package
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = '${{ steps.release.outputs.tag }}'
-          if ($tag -notmatch '^v(?<version>\d+\.\d+\.\d+)$') {
-            throw "Tag '$tag' is not a semantic release tag."
-          }
-          $version = $Matches.version
-          $iniHeader = Get-Content Config\TextDrawAntiAliasingFix.ini -TotalCount 1
-          $changelog = Get-Content CHANGELOG.md -Raw
-          $escaped = [regex]::Escape($version)
-          $sectionPattern = "(?ms)^##[ \t]+$escaped(?:[ \t]+-[^\r\n]+)?[ \t]*\r?\n(?<body>.*?)(?=^##[ \t]+|\z)"
-          $section = [regex]::Match($changelog, $sectionPattern)
-          if (-not $section.Success) {
-            throw "CHANGELOG.md has no section for $version."
-          }
+          $version = "${{ github.ref_name }}" -replace '^v', ''
 
+          $iniHeader = (Get-Content Config\TextDrawAntiAliasingFix.ini -TotalCount 1)
           if ($iniHeader -ne "# TextDraw Anti-Aliasing Fix v$version") {
-            throw "INI version does not match tag $tag."
+              throw "Config\TextDrawAntiAliasingFix.ini declares '$iniHeader', not version $version."
           }
 
-          $archiveBase = "TextDrawAntiAliasingFix-v$version"
-          $staging = "build\release\$archiveBase"
-          New-Item -ItemType Directory -Force -Path $staging | Out-Null
-          Copy-Item build\TextDrawAntiAliasingFix.asi $staging
-          Copy-Item Config\TextDrawAntiAliasingFix.ini $staging
+          $archiveName = "TextDrawAntiAliasingFix-v$version.zip"
+          $archive = Join-Path build $archiveName
+          $checksum = "$archive.sha256"
+          $stage = Join-Path build "release\TextDrawAntiAliasingFix-v$version"
+          Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          Copy-Item build\TextDrawAntiAliasingFix.asi, build\TextDrawAntiAliasingFix.ini -Destination $stage
 
-          $archive = "build\$archiveBase.zip"
-          Compress-Archive -LiteralPath (Get-ChildItem -LiteralPath $staging).FullName `
-            -DestinationPath $archive -CompressionLevel Optimal
+          Compress-Archive -Path "$stage\*" -DestinationPath $archive -Force
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          "$hash  $archiveName" | Set-Content -LiteralPath $checksum -Encoding ascii
 
-          $digest = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$digest  $archiveBase.zip" | Set-Content "$archive.sha256" -Encoding ascii
-          $section.Groups['body'].Value.Trim() | Set-Content build\release-notes.md -Encoding utf8
+          $changelog = Get-Content CHANGELOG.md -Raw
+          # The optional suffix after the heading must stay on the heading
+          # line: under (?s) a \s+ there crosses the blank line and swallows the
+          # first bullet of the section.
+          $pattern = "(?ms)^##[ \t]+$([regex]::Escape($version))(?:[ \t]+-[^\r\n]+)?[ \t]*\r?\n(?<body>.*?)(?=^##[ \t]|\z)"
+          $match = [regex]::Match($changelog, $pattern)
+          if (-not $match.Success) {
+              throw "CHANGELOG.md has no section for $version."
+          }
+          [IO.File]::WriteAllText(
+              (Join-Path build release-notes.md),
+              $match.Groups['body'].Value.Trim(),
+              [Text.UTF8Encoding]::new($false)
+          )
 
+          "version=$version" >> $env:GITHUB_OUTPUT
           "archive=$archive" >> $env:GITHUB_OUTPUT
-          "checksum=$archive.sha256" >> $env:GITHUB_OUTPUT
-          "tag=$tag" >> $env:GITHUB_OUTPUT
-
-          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
-          $releaseExists = $LASTEXITCODE -eq 0
-          $global:LASTEXITCODE = 0
-          if ($releaseExists) {
-            "publish=false" >> $env:GITHUB_OUTPUT
-          } else {
-            "publish=true" >> $env:GITHUB_OUTPUT
-          }
+          "checksum=$checksum" >> $env:GITHUB_OUTPUT
 
       - name: Attest release archive
-        if: steps.package.outputs.publish == 'true'
         uses: actions/attest@v4
         with:
           subject-path: ${{ steps.package.outputs.archive }}
 
-      - name: Publish GitHub Release
-        if: steps.package.outputs.publish == 'true'
+      - name: Publish GitHub release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create '${{ steps.package.outputs.tag }}' `
-            '${{ steps.package.outputs.archive }}' `
-            '${{ steps.package.outputs.checksum }}' `
-            --title 'TextDraw Anti-Aliasing Fix ${{ steps.package.outputs.tag }}' `
+          gh release create "${{ github.ref_name }}" `
+            "${{ steps.package.outputs.archive }}" `
+            "${{ steps.package.outputs.checksum }}" `
+            --verify-tag `
+            --latest `
+            --title "TextDraw Anti-Aliasing Fix v${{ steps.package.outputs.version }}" `
             --notes-file build\release-notes.md

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.2
+
+- Added creation of `TextDrawAntiAliasingFix.ini` next to the plugin when it
+  is missing, byte for byte the canonical file.
+- Added version information to the plugin file.
+- Removed `README.txt` from the release archive; the repository README is the
+  documentation.
+
 ## 1.0.1
 
 - Fixed the game staying on a black screen after alt-tab once a preview had

@@ -1,7 +1,7 @@
 # TextDraw Anti-Aliasing Fix
 
-A GTA San Andreas ASI plugin that supersamples the SA-MP model preview render
-pass used by preview-model textdraws.
+`TextDrawAntiAliasingFix.asi` is a standalone GTA San Andreas plugin that
+supersamples the SA-MP model preview pass used by preview-model textdraws.
 
 SA-MP does not draw preview-model textdraws directly into the frame. The client
 creates its own RenderWare camera with a 256x256 camera-texture raster and a
@@ -12,7 +12,7 @@ driver anti-aliasing profiles applied to the main backbuffer never reach the
 off-screen target, so preview models stay jagged while the scene behind them is
 smooth.
 
-TextDraw Anti-Aliasing Fix redirects only that preview pass into a plain render
+The plugin redirects only that preview pass into a plain render
 target several times the size of the preview raster, together with a matching
 depth surface. The clear the client performed on the original raster is repeated
 there, so the background colour and alpha are preserved, and after the model is
@@ -20,9 +20,8 @@ rendered the image is reduced back into the client's preview texture. The
 preview camera, its projection and the sprite composition pass are untouched, so
 the framing of the preview is exactly what the client asked for.
 
-The anti-aliasing is done by supersampling rather than by multisampling. That is
-a measured decision, not a preference: rendering this pass into a multisampled
-target loses the depth comparison, and the body shell of a model is rejected
+The anti-aliasing is done by supersampling rather than by multisampling:
+rendering this pass into a multisampled target loses the depth comparison, and the body shell of a model is rejected
 while its interior and far side remain, at every sample count from `2x` upward.
 The same swap into a plain single-sample target reproduces the client's own
 image exactly. Supersampling also smooths texture detail inside the silhouette,
@@ -47,33 +46,29 @@ water reflections are out of scope.
 
 ## Requirements
 
-- Grand Theft Auto: San Andreas PC, Hoodlum/US 1.0 executable.
-- SA-MP. The interception was verified against the `0.3.7-R1` client.
-- An ASI loader.
-- A Direct3D 9 graphics device able to allocate a render target and depth
-  surface of `previewScale * supersample * 256` pixels a side in the preview
-  raster's formats.
+- GTA San Andreas 1.0 US (Compact or Hoodlum executable).
+- An ASI loader, such as Silent's ASI Loader or Ultimate ASI Loader.
+- SA-MP. The interception was verified against the `0.3.7-R1` client; the
+  preview pass is identified by the calling module rather than by client
+  addresses, so other builds are expected to work but were not inspected.
+- A Direct3D 9 device able to allocate a render target and depth surface of
+  `previewScale * supersample * 256` pixels a side in the preview raster's
+  formats.
 
-Other game executables are not supported because the hooks and RenderWare
-bindings are address-specific. The plugin identifies the preview pass by the
-calling module rather than by client-side addresses, so it does not depend on a
-single `samp.dll` build, but only `0.3.7-R1` was inspected. Runtime coexistence
-still needs validation with the user's complete mod and driver-profile setup.
+Other executables are unsupported: the hooks and RenderWare bindings are
+address-specific, and the plugin does nothing when the image base or the
+expected bytes do not match.
 
 ## Installation
 
-1. Install an ASI loader in the GTA San Andreas directory.
-2. Copy `TextDrawAntiAliasingFix.asi` and `TextDrawAntiAliasingFix.ini` next to
-   `gta_sa.exe`.
-3. Fully restart the game and connect to a server that uses preview-model
-   textdraws.
+1. Extract `TextDrawAntiAliasingFix.asi` and `TextDrawAntiAliasingFix.ini`
+   into the GTA San Andreas directory or its `scripts` directory.
+2. Start the game and connect to a server that uses preview-model textdraws.
 
 ## Configuration
 
-The default `TextDrawAntiAliasingFix.ini` is:
-
 ```ini
-# TextDraw Anti-Aliasing Fix v1.0.1
+# TextDraw Anti-Aliasing Fix v1.0.2
 # Created by sonochiwa
 # Source code: https://github.com/sonochiwa/sa-textdraw-anti-aliasing-fix
 
@@ -84,6 +79,7 @@ previewScale=2
 
 | Setting | Default | Meaning |
 | --- | ---: | --- |
+| `[antiAliasing]` | | |
 | `supersample` | `4` | Rendering resolution multiplier for the preview. Values are normalized to `1`, `2`, `4` or `8`; `1` disables anti-aliasing while keeping the rest of the path. |
 | `previewScale` | `2` | Multiplies the client's 256x256 preview raster. Values are normalized to `1`, `2`, `4` or `8`; `1` keeps the original size. |
 
@@ -98,28 +94,38 @@ model is rasterized before being reduced into it. The defaults render at
 
 ## Building
 
-Use Visual Studio 2022 with the v143 C++ toolset. Build
-`TextDrawAntiAliasingFix.sln` as `Release|Win32`:
+Visual Studio 2022 (v143), `Release|Win32`. Open `TextDrawAntiAliasingFix.sln`
+or run:
 
 ```powershell
-& "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe" `
-  TextDrawAntiAliasingFix.sln /t:Rebuild /p:Configuration=Release /p:Platform=Win32 /m
+msbuild TextDrawAntiAliasingFix.sln /t:Rebuild /p:Configuration=Release /p:Platform=Win32
 ```
 
-The plugin and canonical INI are written to `build\`. Release builds use the
-static C/C++ runtime and require no vendored SDK or runtime shader compiler.
+The plugin is written to `build\TextDrawAntiAliasingFix.asi` next to a copy of
+the INI.
 
 ## Repository Layout
 
 ```text
 TextDrawAntiAliasingFix.sln
-Config/
-  TextDrawAntiAliasingFix.ini
-src/
-  TextDrawAntiAliasingFix.cpp
+README.md
+CHANGELOG.md
+LICENSE
+.github\workflows\release.yml   Tagged release build, checksum and attestation
+Config\
+  TextDrawAntiAliasingFix.ini   Canonical configuration, embedded as RCDATA
+src\
+  TextDrawAntiAliasingFix.cpp   DllMain and the initialization thread
+  TextDrawAntiAliasingFix.rc    Version resource and the embedded INI
   TextDrawAntiAliasingFix.vcxproj
-.github/workflows/
-  release.yml
+  addresses.h                   Game addresses, offsets, expected bytes
+  config.cpp / config.h         INI creation and loading
+  hooks.cpp / hooks.h           RenderWare camera and raster detours
+  patch.cpp / patch.h           Safe reads, protected writes, detours
+  samp.cpp / samp.h             Caller check against samp.dll
+  surfaces.cpp / surfaces.h     Supersampled surfaces and the reset hook
+  resource.h
+  version.h
 ```
 
 ## How It Works
@@ -160,17 +166,16 @@ on the next preview.
 
 ## Release Integrity
 
-Tagged archives are built by GitHub Actions from the tagged source revision.
-Each release includes a SHA-256 checksum and a signed GitHub build-provenance
-attestation. Verify an archive with:
+Tagged releases are built by GitHub Actions from the tagged commit. Each
+release carries `TextDrawAntiAliasingFix-vX.Y.Z.zip`, its SHA-256 in
+`TextDrawAntiAliasingFix-vX.Y.Z.zip.sha256` and a signed build-provenance
+attestation, which proves that the archive was produced by this repository's
+workflow from that revision. It does not prove the code is bug-free.
 
-```powershell
-gh attestation verify TextDrawAntiAliasingFix-v1.0.1.zip -R sonochiwa/sa-textdraw-anti-aliasing-fix
+```text
+gh attestation verify TextDrawAntiAliasingFix-vX.Y.Z.zip -R sonochiwa/sa-textdraw-anti-aliasing-fix
 ```
-
-This verifies archive provenance and integrity; it is not a guarantee that the
-software is bug-free or safe for every mod configuration.
 
 ## License
 
-[MIT](LICENSE)
+MIT. See [LICENSE](LICENSE).
