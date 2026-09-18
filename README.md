@@ -120,8 +120,6 @@ src/
   TextDrawAntiAliasingFix.vcxproj
 .github/workflows/
   release.yml
-packaging/
-  README.txt
 ```
 
 ## How It Works

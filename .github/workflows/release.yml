@@ -76,17 +76,12 @@ jobs:
           if ($iniHeader -ne "# TextDraw Anti-Aliasing Fix v$version") {
             throw "INI version does not match tag $tag."
           }
-          $packageHeader = Get-Content packaging\README.txt -TotalCount 1
-          if ($packageHeader -ne "TextDraw Anti-Aliasing Fix v$version") {
-            throw "Package README version does not match tag $tag."
-          }
 
           $archiveBase = "TextDrawAntiAliasingFix-v$version"
           $staging = "build\release\$archiveBase"
           New-Item -ItemType Directory -Force -Path $staging | Out-Null
           Copy-Item build\TextDrawAntiAliasingFix.asi $staging
           Copy-Item Config\TextDrawAntiAliasingFix.ini $staging
-          Copy-Item packaging\README.txt $staging
 
           $archive = "build\$archiveBase.zip"
           Compress-Archive -LiteralPath (Get-ChildItem -LiteralPath $staging).FullName `
