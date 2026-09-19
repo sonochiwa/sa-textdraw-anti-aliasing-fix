@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.3
+
+- Added `README.txt` to the release archive.
+
 ## 1.0.2
 
 - Added creation of `TextDrawAntiAliasingFix.ini` next to the plugin when it

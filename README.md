@@ -16,7 +16,6 @@ preview texture itself. The framing the server asked for is unchanged.
 - Falls back to a lower factor when video memory runs out.
 - Verifies the bytes it replaces before writing and refuses to patch any
   other executable.
-- Creates the default INI when it is missing.
 
 ## Requirements
 
@@ -37,15 +36,8 @@ Other executables are left untouched.
 
 ## Configuration
 
-```ini
-# TextDraw Anti-Aliasing Fix v1.0.2
-# Created by sonochiwa
-# Source code: https://github.com/sonochiwa/sa-textdraw-anti-aliasing-fix
-
-[antiAliasing]
-supersample=4
-previewScale=2
-```
+`TextDrawAntiAliasingFix.ini` next to the plugin, created with these defaults
+when it is missing:
 
 | Setting | Default | Meaning |
 | --- | ---: | --- |
